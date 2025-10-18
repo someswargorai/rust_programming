@@ -2,13 +2,39 @@ use axum::{Json, extract::Path, response::IntoResponse, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
-
+#[derive(Debug)]
 // -------------------- MODELS --------------------
 #[derive(Serialize, Clone)] 
 pub struct User {
     pub id: Uuid,
     pub name: String,
     pub email: String,
+}
+
+impl User {
+    
+    pub fn initialize()->Self{
+        let user = User{
+            id: Uuid::new_v4(),
+            name: String::from("somewargorai"),
+            email: String::from("somewar@klizos.com")
+        };
+
+        user
+    }
+    pub fn capitalize(&self)-> Self{
+        
+        let first_letter=self.email[0..1].to_string().to_uppercase();
+        let rest=self.email[1..].to_string().to_uppercase();
+        let concat=format!("{}{}",first_letter,rest);
+        let user=User{
+            email:concat,
+            ..self.clone()
+        };
+
+        user
+    }
+
 }
 
 #[derive(Deserialize)]
@@ -90,12 +116,15 @@ pub async fn create_user(Json(payload): Json<UserInput> ) -> impl IntoResponse {
 
 pub async fn get_user_by_name(Json(payload): Json<UserInput>)-> impl IntoResponse {
 
+    println!("{:?}",User::initialize());
+
     let searched_user= User{
         id: Uuid::new_v4(),
         name: payload.name,
         email:payload.email.unwrap_or(String::from("segseg@klizos.com"))
     };
 
+    let uppercased_user=User::capitalize(&searched_user);
    
-    (StatusCode::OK, Json(searched_user))
+    (StatusCode::OK, Json(uppercased_user))
 }
