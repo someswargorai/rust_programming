@@ -5,12 +5,11 @@ use serde::Serialize;
 use serde_json::json;
 use serde::{Deserialize}; 
 
-#[derive(Serialize, Clone,Deserialize)] 
+#[derive(Serialize, Clone, Deserialize)] 
 #[derive(Debug)]
 struct Claims {
     sub: String,
     exp: usize,
-    // Add other claims as needed
 }
 
 pub async fn check_token_middleware(

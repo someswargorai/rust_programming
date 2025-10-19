@@ -244,7 +244,6 @@ dependencies = [
  "chrono",
  "hyper",
  "jsonwebtoken",
- "ring",
  "serde",
  "serde_json",
  "tokio",
