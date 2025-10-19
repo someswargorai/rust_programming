@@ -1,5 +1,6 @@
 mod routes;
 mod controller;
+mod middleware;
 
 use std::net::SocketAddr;
 
