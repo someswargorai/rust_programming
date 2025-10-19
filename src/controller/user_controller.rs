@@ -1,4 +1,5 @@
 use axum::{Json, extract::Path, response::IntoResponse, http::StatusCode};
+use jsonwebtoken::{encode, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -9,6 +10,12 @@ pub struct User {
     pub id: Uuid,
     pub name: String,
     pub email: String,
+}
+
+#[derive(Serialize, Clone)] 
+pub struct Claims{
+    pub sub: String,
+    pub exp: usize
 }
 
 impl User {
@@ -44,6 +51,22 @@ pub struct UserInput {
 }
 
 // -------------------- ROUTE HANDLERS --------------------
+
+pub async fn login(Json(payload): Json<UserInput>) -> impl IntoResponse {
+    let name = &payload.name;
+    let claims = Claims {
+        sub: name.clone(),
+        exp: (chrono::Utc::now() + chrono::Duration::hours(12)).timestamp() as usize,
+    };
+
+    match encode(&Header::default(), &claims, &EncodingKey::from_secret("secret".as_ref())) {
+        Ok(token) => (StatusCode::OK, Json(json!({"token": token}))),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to encode token: {}", e)})),
+        ),
+    }
+}
 
 // ✅ GET / (Root)
 pub async fn root() -> impl IntoResponse {
