@@ -1,5 +1,5 @@
-use axum::{routing::{get,post}, Router};
-use crate::{controller::user_controller::{create_user, foo_bar, get_foo, get_user_by_email, get_user_by_name, get_users, login, post_foo, register_user, root,update_user}};
+use axum::{middleware, routing::{get,post}, Router};
+use crate::{controller::user_controller::{create_user, foo_bar, get_foo, get_user_by_email, get_user_by_name, get_users, login, post_foo, register_user, root,update_user}, middleware::check_token_middleware::check_token_middleware};
 
 
 
@@ -8,7 +8,7 @@ pub fn create_app_routes() -> Router {
     let public_routes=Router::new()
         .route("/", get(root))
         .route("/foo", get(get_foo).post(post_foo))
-        .route("/foo/bar", get(foo_bar))
+        .route("/foo/bar", get(foo_bar).layer(middleware::from_fn(check_token_middleware)))
         .route("/users", get(get_users).post(create_user))
         .route("/users/:email", get(get_user_by_email))
         .route("/users/details", post(get_user_by_name))

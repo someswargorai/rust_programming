@@ -1,12 +1,13 @@
 use axum::{extract::{Path}, http::StatusCode, response::IntoResponse, Json};
 use jsonwebtoken::{EncodingKey, Header, encode};
-use mongodb::{bson::{doc}, Client, Collection};
+use mongodb::{bson::doc, Client, Collection};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 use futures_util::stream::TryStreamExt;
 use mongodb::bson::oid::ObjectId;
 use crate::db::db_connection;
+use bcrypt::{hash, DEFAULT_COST};
 
 #[derive(Debug, Serialize, Clone)]
 pub struct User {
@@ -58,14 +59,14 @@ pub struct Register {
 }
 
 #[derive(Deserialize)]
-pub struct UserInput {
+pub struct UserInput {  
     pub name: String,
     pub email: Option<String>,
+  
 }
 
 #[derive(Deserialize)]
-pub struct loginInput {
-    pub password: String,
+pub struct LoginInput {
     pub email: String,
 }
 
@@ -80,6 +81,16 @@ pub struct RegisterInput {
 #[derive(Debug)]
 pub struct UserDocument {
 
+    pub _id: Option<ObjectId>,
+    pub name: String,
+    pub email: String,
+    pub password: String
+}
+
+#[derive(Serialize,Deserialize)]
+#[derive(Debug)]
+pub struct InsertUserDocument {
+     #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
     pub _id: Option<ObjectId>,
     pub name: String,
     pub email: String,
@@ -191,14 +202,87 @@ pub async fn get_user_by_email(Path(email): Path<String>) -> impl IntoResponse {
     (StatusCode::OK, Json(user_by_id)).into_response()
 }
 
-pub async fn create_user(Json(payload): Json<UserInput>) -> impl IntoResponse {
-    let user = User {
-        id: Uuid::new_v4(),
-        name: payload.name,
-        email: payload.email.unwrap_or(String::from("user@gmail.com")),
+pub async fn create_user(Json(payload): Json<UpdatePayload>) -> impl IntoResponse {
+    let db = db_connection::get_db().await;
+    let collection: Collection<InsertUserDocument> = db.collection("users");
+    let filter= doc! {"email": &payload.email};
+    
+    let result = match collection.find_one(filter, None).await{
+        Ok(Some(user))=>{
+             return (
+                StatusCode::FOUND,
+                Json(json!({"message":"Already exists user with this mail","user":user}))
+            ).into_response()
+        },
+        Ok(None)=>{
+           
+        },
+        Err(_)=>{
+            return (StatusCode::INTERNAL_SERVER_ERROR).into_response();
+        }
     };
 
-    (StatusCode::CREATED, Json(user))
+    println!("227 {:?}",result);
+    
+    
+    let hashed_password = match hash(&payload.password, DEFAULT_COST) {
+        Ok(hashed) => hashed,
+        Err(e) => {
+            eprintln!("Error hashing password: {:?}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"message": "Failed to hash password"})),
+            ).into_response();
+        }
+    };
+
+    let user = InsertUserDocument {
+        _id: None,
+        email: payload.email,
+        password: hashed_password,
+        name: payload.name
+    };
+
+    let result = match collection.insert_one(user, None).await {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!("Error inserting user: {:?}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"message": "Internal server error"})),
+            ).into_response();
+        }
+    };
+
+    // Fetch the inserted document using the inserted_id
+    let inserted_id = result.inserted_id;
+    let inserted_user = match collection.find_one(doc! { "_id": &inserted_id }, None).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            println!("Inserted user not found for id: {:?}", inserted_id);
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"message": "Inserted user not found"})),
+            ).into_response();
+        }
+        Err(e) => {
+            eprintln!("Error fetching inserted user: {:?}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"message": "Internal server error"})),
+            ).into_response();
+        }
+    };
+
+    println!("Inserted user: {:?}", inserted_user);
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "message": "User inserted successfully",
+            "user": inserted_user
+        })),
+    ).into_response()
 }
 
 pub async fn get_user_by_name(Json(payload): Json<UserInput>) -> impl IntoResponse {
@@ -215,7 +299,7 @@ pub async fn get_user_by_name(Json(payload): Json<UserInput>) -> impl IntoRespon
     (StatusCode::OK, Json(uppercased_user))
 }
 
-pub async fn login(Json(payload): Json<loginInput>) -> impl IntoResponse {
+pub async fn login(Json(payload): Json<LoginInput>) -> impl IntoResponse {
    // Replace "mydb" with your database name
 
     let db = db_connection::get_db().await;

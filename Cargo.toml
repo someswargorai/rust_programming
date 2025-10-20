@@ -16,4 +16,5 @@ chrono = "0.4.34"
 mongodb = { version = "2.8", features = ["tokio-runtime"] }
 futures-util = "0.3"
 serde_with = "3.0"
+bcrypt = "0.15"
 
