@@ -1,61 +1,60 @@
-use std::fs::{self};
-
-use axum::{Json, extract::Path, response::IntoResponse, http::StatusCode};
-use jsonwebtoken::{encode, EncodingKey, Header};
+use axum::{extract::{Path}, http::StatusCode, response::IntoResponse, Json};
+use jsonwebtoken::{EncodingKey, Header, encode};
+use mongodb::{bson::{doc}, Client, Collection};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
-#[derive(Debug)]
-#[derive(Serialize, Clone)] 
+use futures_util::stream::TryStreamExt;
+use mongodb::bson::oid::ObjectId;
+use crate::db::db_connection;
+
+#[derive(Debug, Serialize, Clone)]
 pub struct User {
     pub id: Uuid,
     pub name: String,
     pub email: String,
 }
 
-#[derive(Serialize, Clone)] 
-pub struct Claims{
+#[derive(Serialize, Clone)]
+pub struct Claims {
     pub sub: String,
-    pub exp: usize
+    pub exp: usize,
 }
 
-#[derive(Serialize, Clone)] 
-pub struct RegisterClaims<'a>{
+#[derive(Serialize, Clone)]
+pub struct RegisterClaims<'a> {
     pub sub: &'a Register,
-    pub exp: usize
+    pub exp: usize,
 }
 
 impl User {
-    
-    pub fn initialize()->Self{
-        let user = User{
+    pub fn initialize() -> Self {
+        let user = User {
             id: Uuid::new_v4(),
             name: String::from("somewargorai"),
-            email: String::from("somewar@klizos.com")
+            email: String::from("somewar@klizos.com"),
         };
 
         user
     }
-    pub fn capitalize(&self)-> Self{
-        
-        let first_letter=self.email[0..1].to_string().to_uppercase();
-        let rest=self.email[1..].to_string().to_uppercase();
-        let concat=format!("{}{}",first_letter,rest);
-        let user=User{
-            email:concat,
+    pub fn capitalize(&self) -> Self {
+        let first_letter = self.email[0..1].to_string().to_uppercase();
+        let rest = self.email[1..].to_string().to_uppercase();
+        let concat = format!("{}{}", first_letter, rest);
+        let user = User {
+            email: concat,
             ..self.clone()
         };
 
         user
     }
-
 }
 
-#[derive(Serialize, Clone, Deserialize)] 
+#[derive(Serialize, Clone, Deserialize)]
 pub struct Register {
     pub name: String,
     pub email: String,
-    pub password: String
+    pub password: String,
 }
 
 #[derive(Deserialize)]
@@ -65,12 +64,37 @@ pub struct UserInput {
 }
 
 #[derive(Deserialize)]
-pub struct RegisterInput{
-    pub name: String,
+pub struct loginInput {
+    pub password: String,
     pub email: String,
-    pub password:String
 }
 
+#[derive(Deserialize)]
+pub struct RegisterInput {
+    pub name: String,
+    pub email: String,
+    pub password: String,
+}
+
+#[derive(Serialize,Deserialize)]
+#[derive(Debug)]
+pub struct UserDocument {
+
+    pub _id: Option<ObjectId>,
+    pub name: String,
+    pub email: String,
+    pub password: String
+}
+
+
+#[derive(Serialize, Deserialize, Clone)]
+
+pub struct UpdatePayload{
+    pub _id: Option<ObjectId>,
+    pub name: String,
+    pub email: String,
+    pub password: String
+}
 
 
 pub async fn root() -> impl IntoResponse {
@@ -90,135 +114,261 @@ pub async fn foo_bar() -> impl IntoResponse {
 }
 
 pub async fn get_users() -> impl IntoResponse {
-    let users = vec![
-        User {
-            id: Uuid::new_v4(),
-            name: "Alice".into(),
-            email: "alice@example.com".into(),
-        },
-        User {
-            id: Uuid::new_v4(),
-            name: "Bob".into(),
-            email: "bob@example.com".into(),
-        },
-    ];
-    Json(users)
-}
+    // Get the database
+    let db = db_connection::get_db().await;
+    let collection: Collection<UserDocument> = db.collection("users");
 
-pub async fn get_user_by_id(Path(id): Path<String>) -> impl IntoResponse {
-    match Uuid::parse_str(&id) {
-        Ok(uuid) => {
-            Json(User {
-                id: uuid,
-                name: "Placeholder User".to_string(),
-                email: "placeholder@example.com".to_string(),
-            })
+    // Find all users
+    let mut cursor = match collection.find(None, None).await {
+        Ok(cursor) => cursor,
+        Err(e) => {
+            eprintln!("Error querying users: {:?}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"message": "Internal server error"})),
+            ).into_response();
         }
-        Err(_) => {
-           Json(User {
-                id: Uuid::nil(),
-                name: "ERROR".to_string(),
-                email: "Invalid UUID".to_string(),
-            })
+    };
+
+    let mut users: Vec<UserDocument> = Vec::new();
+
+    while let Some(user) = match cursor.try_next().await {
+        Ok(user) => user,
+        Err(e) => {
+            eprintln!("Error iterating cursor: {:?}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"message": "Internal server error"})),
+            ).into_response();
         }
+    } {
+        println!("Found user: {:?}", user); // Print each user
+        users.push(user);
     }
+
+    // Handle empty result
+    if users.is_empty() {
+        println!("No users found in the collection");
+        return (
+            StatusCode::OK, // or StatusCode::NOT_FOUND
+            Json(json!({"message": "No users found", "users": []})),
+        ).into_response();
+    }
+    // Return users as JSON
+    (StatusCode::OK, Json(json!({"users":users})).into_response()).into_response()
 }
 
+pub async fn get_user_by_email(Path(email): Path<String>) -> impl IntoResponse {
+    // Get the database
+    let db = db_connection::get_db().await;
+    let collection: Collection<UserDocument> = db.collection("users");
 
-pub async fn create_user(Json(payload): Json<UserInput> ) -> impl IntoResponse {
+    // Create filter for email
+    let filter = doc! {"email": email.clone()};
+
+    // Find user by email
+    let user_by_id = match collection.find_one(filter, None).await {
+        Ok(Some(user)) => {
+            println!("Found user: {:?}", user); // Print for debugging
+            user
+        }
+        Ok(None) => {
+            println!("No user found for email: {}", email); // Print for debugging
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"message": "Not Found"})),
+            ).into_response();
+        }
+        Err(e) => {
+            eprintln!("Error querying user: {:?}", e); // Log error for debugging
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"message": "Internal server error"})),
+            ).into_response();
+        }
+    };
+
+    (StatusCode::OK, Json(user_by_id)).into_response()
+}
+
+pub async fn create_user(Json(payload): Json<UserInput>) -> impl IntoResponse {
     let user = User {
         id: Uuid::new_v4(),
         name: payload.name,
         email: payload.email.unwrap_or(String::from("user@gmail.com")),
     };
-    
+
     (StatusCode::CREATED, Json(user))
 }
 
-pub async fn get_user_by_name(Json(payload): Json<UserInput>)-> impl IntoResponse {
+pub async fn get_user_by_name(Json(payload): Json<UserInput>) -> impl IntoResponse {
+    println!("{:?}", User::initialize());
 
-    println!("{:?}",User::initialize());
-
-    let searched_user= User{
+    let searched_user = User {
         id: Uuid::new_v4(),
         name: payload.name,
-        email:payload.email.unwrap_or(String::from("segseg@klizos.com"))
+        email: payload.email.unwrap_or(String::from("segseg@klizos.com")),
     };
 
-    let uppercased_user=User::capitalize(&searched_user);
-   
+    let uppercased_user = User::capitalize(&searched_user);
+
     (StatusCode::OK, Json(uppercased_user))
 }
 
+pub async fn login(Json(payload): Json<loginInput>) -> impl IntoResponse {
+   // Replace "mydb" with your database name
 
+    let db = db_connection::get_db().await;
+    let collection: Collection<UserDocument>=db.collection("users");
 
-pub async fn login(Json(payload): Json<UserInput>) -> impl IntoResponse {
+    let email = doc! {"email": &payload.email};
 
-let name = &payload.name;
-let claims = Claims {
-    sub: name.clone(),
-    exp: (chrono::Utc::now() + chrono::Duration::hours(12)).timestamp() as usize,
-};
+    let user: UserDocument = match collection.find_one(email, None).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"message":"Unauthorized User!!"})),
+            )
+                .into_response();
+        }
+        Err(_) => return Json(json!({"message":"Interval server error"})).into_response(),
+    };
 
-match encode(&Header::default(), &claims, &EncodingKey::from_secret("secret".as_ref())) {
-    Ok(token) => (StatusCode::OK, Json(json!({"token": token, "message":"login successful"}))).into_response(),
-    Err(e) => (
-        StatusCode::INTERNAL_SERVER_ERROR,
+    let claims = Claims {
+        sub: user.email,
+        exp: (chrono::Utc::now() + chrono::Duration::hours(12)).timestamp() as usize,
+    };
+
+    match encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret("secret".as_ref()),
+    ) {
+        Ok(token) => (
+            StatusCode::OK,
+            Json(json!({"token": token, "message":"login successful"})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("Failed to encode token: {}", e)})),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }
 
 pub async fn register_user(Json(payload): Json<RegisterInput>) -> impl IntoResponse {
-
-    let mut vec: Vec<Register> = match fs::read_to_string("db.json"){
-        Ok(item)=> match serde_json::from_str(&item){
-            Ok(data)=>data,
-            Err(_)=>Vec::new()
+    // MongoDB connection (replace with your connection string)
+    let client = match Client::with_uri_str("mongodb://localhost:27017").await {
+        Ok(client) => client,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Failed to connect to MongoDB"})),
+            )
+                .into_response();
         }
-        Err(_)=> Vec::new()
     };
-      
 
+    // Get the collection (equivalent to a table in SQL)
+    let db = client.database("mydb"); // Replace "mydb" with your database name
+    let collection: Collection<Register> = db.collection("users"); // Replace "users" with your collection name
+
+    // Create the user object
     let registered_user = Register {
         name: payload.name,
         email: payload.email,
-        password: payload.password,
+        password: payload.password, // Note: In production, hash the password!
     };
 
-    if vec.iter().any(|f| f.email == registered_user.email) {
-        return (StatusCode::CONFLICT, Json(json!({"message": "User already exists"}))).into_response();
+    // Check if user with the same email exists
+    let filter = doc! {"email": &registered_user.email};
+    if collection
+        .find_one(filter, None)
+        .await
+        .unwrap_or(None)
+        .is_some()
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"message": "User already exists"})),
+        )
+            .into_response();
     }
 
-    vec.push(registered_user.clone());
+    // Insert the new user into MongoDB
+    match collection.insert_one(registered_user.clone(), None).await {
+        Ok(_) => (),
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Failed to register user"})),
+            )
+                .into_response();
+        }
+    }
 
+    // Create JWT claims
     let register_claims = RegisterClaims {
         sub: &registered_user,
         exp: (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
     };
 
-    fs::write(
-        String::from("db.json"),
-        serde_json::to_string_pretty(&vec).unwrap(),
-    ).unwrap();
-
+    // Generate JWT
     match encode(
         &Header::default(),
         &register_claims,
         &EncodingKey::from_secret("rust_register".as_ref()),
     ) {
-        Ok(token) => 
-        
-        return (
+        Ok(token) => (
             StatusCode::OK,
-            Json(json!({"token": token, "message": "User registered successful!", "data": registered_user})),
-        ).into_response(),
-
-        Err(_) => 
-        return (
+            Json(json!({
+                "token": token,
+                "message": "User registered successfully!",
+                "data": registered_user
+            })),
+        )
+            .into_response(),
+        Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": "Failed to generate token"})),
-        ).into_response(),
-
+        )
+            .into_response(),
     }
+}
+
+pub async fn update_user(Json(payload): Json<UpdatePayload>) -> impl IntoResponse {
+    let db = db_connection::get_db().await;
+    let collection: Collection<UserDocument> = db.collection("users");
+    let filter = doc! { "_id": &payload._id };
+    let update = doc! { "$set": { "password": &payload.password, "email": &payload.email, "name": &payload.name } };
+
+    let result = match collection.find_one_and_update(filter, update, None).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            println!("No user found for email: {}", &payload.email);
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"message": "User not found"})),
+            ).into_response();
+        }
+        Err(e) => {
+            eprintln!("Error updating user: {:?}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"message": "Internal server error"})),
+            ).into_response();
+        }
+    };
+
+    println!("Updated user: {:?}", result);
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "message": "User updated successfully",
+            "user": result
+        })),
+    ).into_response()
 }
